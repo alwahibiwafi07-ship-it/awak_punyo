@@ -2,7 +2,7 @@ import  type {NextFunction, Request, Response} from "express";
 import {prisma} from "../db.ts";
 import type {Role} from "../generated/prisma/client.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { verifyToken } from "../lib/jwt.ts"; // DIPERBAIKI: verityToken → verifyToken
+import { verifyToken } from "../lib/jwt.ts";
 
 export type AuthUser = {
     id: string;
@@ -13,7 +13,7 @@ export type AuthUser = {
 
 declare global {
     namespace Express {
-        interface Request { // DIPERBAIKI: "request" → "Request" (R besar, harus sama persis dengan nama tipe bawaan Express)
+        interface Request {
           user?: AuthUser;  
         }
     }
@@ -30,7 +30,7 @@ export async function authenticateToken(req: Request, _res: Response, next: Next
 
     let payload;
     try {
-        payload = verifyToken(token); // DIPERBAIKI: verityToken → verifyToken
+        payload = verifyToken(token);
     } catch {
         throw new HttpError(401, 'Sesi Anda telah berakhir, silahkan login kembali');
     }

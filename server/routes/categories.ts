@@ -3,28 +3,28 @@ import {z} from "zod" ;
 import {prisma} from "../db.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { idParamSchema } from "../lib/validations.ts";
-import { authenticateToken, requireRole } from "../middleware/auth.ts"; // DIPERBAIKI: requireRole belum di-import
+import { authenticateToken, requireRole } from "../middleware/auth.ts";
 
 const router = Router();
 
 router.use(authenticateToken);
 
-const nameRule = z.string().trim().min(1, "Nama wajib diisi").max(50, "Nama maksimal 50 karakter"); // DIPERBAIKI: "waib" → "wajib"
-const sortOrderRule = z.number().int("Urutan harus bilangan bulat").min(0, "Urutan minimal 0"); // DIPERBAIKI: kurang nama fungsi ".int"
+const nameRule = z.string().trim().min(1, "Nama wajib diisi").max(50, "Nama maksimal 50 karakter");
+const sortOrderRule = z.number().int("Urutan harus bilangan bulat").min(0, "Urutan minimal 0");
 
 const createCategorySchema = z.object({
     code: z.string().trim().toUpperCase().regex(/^[A-Z]{2,4}$/, "Kode harus 2–4 huruf, contoh: LK"),
-    name: nameRule, // DIPERBAIKI: saat MEMBUAT kategori, nama WAJIB (tanpa .optional())
+    name: nameRule,
     sortOrder: sortOrderRule.optional(),
 });
 
-// DIPERBAIKI: schema untuk Update belum ada, padahal dipakai di router.patch
+
 const updateCategorySchema = z.strictObject({
     name: nameRule.optional(),
     sortOrder: sortOrderRule.optional(),
 });
 
-// DIPERBAIKI: endpoint [CRUD - Read] GET /api/categories belum ada
+
 router.get("/", async (_req, res) => {
     const categories = await prisma.category.findMany({
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -33,7 +33,7 @@ router.get("/", async (_req, res) => {
     res.json(categories);
 });
 
-// DIPERBAIKI: endpoint Create harus router.POST, bukan router.get
+
 router.post("/", requireRole("ADMIN"), async (req, res) => {
     const data = createCategorySchema.parse(req.body);
     const existing = await prisma.category.findUnique({ where: { code: data.code} });
@@ -65,16 +65,16 @@ router.patch("/:id", requireRole("ADMIN"), async (req, res) => {
 router.delete("/:id", requireRole("ADMIN"), async (req, res) => {
     const {id} = idParamSchema.parse(req.params);
 
-    // DIPERBAIKI: cek menu AKTIF (archivedAt: null) belum ada
+
     const activeMenus = await prisma.menu.count({ where: { categoryId: id, archivedAt: null } });
     if (activeMenus > 0) {
         throw new HttpError(409, `Kategori masih punya ${activeMenus} menu aktif. Pindahkan atau arsipkan menunya dulu.`);
     }
 
-    // DIPERBAIKI: variabel archivedMenus belum dibuat
+
     const archivedMenus = await prisma.menu.count({ where: { categoryId: id } });
     if (archivedMenus > 0) {
-        throw new HttpError(409, "Kategori tidak bisa dihapus karena masih dipakai menu yang sudah diarsipkan."); // DIPERBAIKI: HttpsError → HttpError
+        throw new HttpError(409, "Kategori tidak bisa dihapus karena masih dipakai menu yang sudah diarsipkan.");
     }
 
     await prisma.category.delete({ where: { id } });
