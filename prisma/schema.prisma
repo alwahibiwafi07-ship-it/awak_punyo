@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client" // generator baru Prisma 7 (hasilnya file .ts, mendukung ESM)
+  output   = "../server/generated/prisma" // hasil generate ditaruh di folder backend, bukan di src/ (frontend)
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  CASHIER
+}
+
+enum Channel {
+  DINE_IN
+  TAKEAWAY
+}
+
+enum PaymentMethod {
+  CASH
+  QRIS
+}
+
+enum TransactionStatus {
+  PENDING
+  PAID
+  EXPIRED
+  CANCELLED
+}
+
+enum StockLogType {
+  SALE
+  ADD
+  REDUCE
+}
+
+model User {
+  id String @id @default(uuid())
+  name String
+  email String @unique
+  passwordHash String
+  role Role @default(CASHIER)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+  stockLogs StockLog[]
+}
+
+model Category {
+  id String @id @default(uuid())
+  code String @unique
+  name String
+  sortOrder Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  menus Menu[]
+}
+
+model Menu {
+  id String @id @default(uuid())
+  code String @unique
+  name String
+  price Int
+  trackStock Boolean @default(true)
+  stockQty Int?
+
+  categoryId String
+  category Category @relation(fields: [categoryId], references: [id])
+
+  archivedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items TransactionItem[]
+  stockLogs StockLog[]
+}
+
+model Transaction {
+  id String @id @default(uuid())
+  clientRef String @unique
+  businessDate DateTime @db.Date
+  ticketNo Int
+  channel Channel
+  paymentMethod PaymentMethod
+  status TransactionStatus @default(PENDING)
+
+  subtotal Int
+  takeoutFee Int @default(0)
+  tax Int
+  rounding Int @default(0)
+  total Int
+  cashReceived Int?
+  changeAmount Int?
+
+  midtransOrderId String? @unique
+  qrisAttempt Int @default(0)
+  qrUrl String?
+  expiresAt DateTime?
+  paidAt DateTime?
+
+  cashierId String
+  cashier User @relation(fields: [cashierId], references: [id])
+
+  items TransactionItem[]
+  stockLogs StockLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([businessDate, ticketNo])
+  @@index([cashierId, businessDate])
+}
+
+model TransactionItem {
+  id String @id @default(uuid())
+  transactionId String
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  menuId String
+  menu Menu @relation(fields: [menuId], references: [id])
+
+  nameSnapshot String
+  priceSnapshot Int
+  qty Int
+  lineTotal Int
+}
+
+model StockLog {
+  id String @id @default(uuid())
+  menuId String
+  menu Menu @relation(fields: [menuId], references: [id])
+  type StockLogType
+  change Int
+  stockAfter Int
+  reason String?
+  note String?
+
+  transactionId String?
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  userId String
+  user User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([menuId, createdAt])
+}

@@ -1,0 +1,398 @@
+// Awak Punyo - schema V1 (Prisma 7, PostgreSQL lokal)
+// Semua uang disimpan sebagai Int (Rupiah utuh), bukan Float.
+// URL database diatur di prisma.config.ts, bukan di sini.
+//
+// Tabel yang SENGAJA belum ada (V2/V3):
+//   Ingredient, IngredientPrice, Purchase, PurchaseItem  -> bahan & belanja
+//   Recipe, RecipeItem                                    -> resep batch & HPP
+//   CookingPlan, WasteLog                                 -> rencana masak, sisa & terbuang
+//   Expense                                               -> biaya operasional
+//   Customer, Tab                                         -> kasbon
+//   BulkOrder                                             -> pesanan besar / nasi kotak
+//   (AI tidak butuh tabel sendiri di awal)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────── ENUM ─────────────────────────
+
+enum Role {
+  ADMIN
+  CASHIER
+}
+
+enum Channel {
+  DINE_IN
+  TAKEOUT
+}
+
+enum PaymentMethod {
+  CASH
+  QRIS
+}
+
+enum TransactionStatus {
+  HELD         // disimpan (hold)
+  PENDING      // menunggu pembayaran QRIS
+  PAID         // lunas
+  VOID_PENDING // diajukan void, menunggu keputusan admin
+  VOIDED       // void disetujui
+  EXPIRED      // QRIS kedaluwarsa
+  CANCELLED    // hold dibatalkan / hangus saat shift ditutup
+}
+
+enum ReceiptStatus {
+  PRINTED
+  NOT_PRINTED // printer bermasalah, perlu cetak ulang dari awal
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED     // kasir sudah kirim hitungan, menunggu admin
+  RECONCILED // admin menyetujui
+  DISPUTED   // admin menandai bermasalah
+}
+
+enum MenuType {
+  ITEM
+  PACKAGE
+}
+
+enum RoundingMode {
+  UP
+  NEAREST
+  DOWN
+}
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
+enum VoidReason {
+  WRONG_ITEM
+  CUSTOMER_CANCELLED
+  WRONG_AMOUNT
+  OTHER
+}
+
+enum VoidDecision {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN // ditarik kasir
+}
+
+enum StockMovementType {
+  RESTOCK
+  SALE
+  VOID_RETURN
+  ADJUST
+}
+
+enum MidtransMode {
+  SANDBOX
+  PRODUCTION
+}
+
+model User {
+  id         String  @id @default(uuid())
+  staffCode  String  @unique // contoh: STF-001
+  name       String
+  phone      String?
+  email      String? @unique // hanya Admin
+  passwordHash String? // hanya Admin
+  pinHash    String // Kasir DAN Admin punya PIN (persetujuan diskon/void)
+  role       Role    @default(CASHIER)
+  isActive   Boolean @default(true)
+
+  failedPinAttempts Int       @default(0)
+  lockedUntil       DateTime?
+  lastLoginAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shifts            Shift[]         @relation("ShiftCashier")
+  reconciledShifts  Shift[]         @relation("ShiftReconciler")
+  transactions      Transaction[]   @relation("TxCashier")
+  approvedDiscounts Transaction[]   @relation("TxDiscountApprover")
+  voidsRequested    VoidRequest[]   @relation("VoidRequester")
+  voidsDecided      VoidRequest[]   @relation("VoidDecider")
+  stockMovements    StockMovement[]
+  auditLogs         AuditLog[]
+}
+
+// ───────────────────────── KATALOG ─────────────────────────
+
+model Category {
+  id         String   @id @default(uuid())
+  code       String   @unique // prefix SKU, contoh: LK, GK, SY
+  name       String   @unique
+  sortOrder  Int      @default(0) // kategori urutan pertama = tab default kasir
+  quickNotes String[] // chip catatan cepat, contoh: ["Kuah dipisah", "Sambal ijo"]
+  menus      Menu[]
+}
+
+model Menu {
+  id         String   @id @default(uuid())
+  sku        String   @unique // dibuat otomatis: kode kategori + nomor urut
+  name       String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+  type       MenuType @default(ITEM)
+  unit       String   @default("porsi") // porsi, potong, gelas, ...
+
+  price Int // harga SEBELUM pajak
+  hpp   Int @default(0) // manual di V1; PACKAGE = jumlah HPP komponen
+
+  stockQty    Int? // null = tidak dilacak (contoh: nasi putih, minuman)
+  isSoldOut   Boolean @default(false)
+  isQuickPick Boolean @default(false) // tombol Paket Cepat di POS
+  imageUrl    String?
+
+  archivedAt DateTime? // soft delete, riwayat transaksi tetap utuh
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  packageItems   PackageItem[]   @relation("PackageParent")
+  usedInPackages PackageItem[]   @relation("PackageComponent")
+  transactionItems TransactionItem[]
+  stockMovements StockMovement[]
+
+  @@index([categoryId])
+}
+
+model PackageItem {
+  id          String @id @default(uuid())
+  packageId   String
+  package     Menu   @relation("PackageParent", fields: [packageId], references: [id], onDelete: Cascade)
+  componentId String
+  component   Menu   @relation("PackageComponent", fields: [componentId], references: [id])
+  quantity    Int    @default(1)
+
+  @@unique([packageId, componentId])
+}
+
+model DiscountPreset {
+  id         String       @id @default(uuid())
+  name       String
+  type       DiscountType
+  value      Int // persen (0-100) atau nominal Rupiah
+  maxAmount  Int? // batas potongan untuk tipe PERCENT
+  requiresPin Boolean     @default(false) // wajib PIN Admin saat dipakai
+  isActive   Boolean      @default(true)
+  createdAt  DateTime     @default(now())
+
+  transactions Transaction[]
+}
+
+// ───────────────────────── PENGATURAN (1 baris, id selalu 1) ─────────────────────────
+
+model Settings {
+  id Int @id @default(1)
+
+  outletName    String @default("RM Awak Punyo")
+  address       String @default("")
+  phone         String @default("")
+  receiptHeader String @default("")
+  receiptFooter String @default("Tarimo kasih atas kunjungan sanak!")
+  paperWidth    Int    @default(80) // 58 atau 80 mm
+
+  taxRate    Int          @default(10) // PB1, persen
+  takeoutFee Int          @default(2000)
+  roundingStep Int        @default(100) // 1 / 100 / 500, hanya untuk Tunai
+  roundingMode RoundingMode @default(UP)
+
+  smallCutLimit     Int @default(500) // potongan kecil tanpa PIN
+  openingFloat      Int @default(500000) // modal awal laci
+  lowStockThreshold Int @default(6)
+  cashTolerance     Int @default(20000) // toleransi selisih kas per shift
+  minMarginPct      Int @default(40) // penanda margin rendah di daftar menu
+
+  midtransMode      MidtransMode @default(SANDBOX)
+  qrisExpiryMinutes Int          @default(15)
+
+  updatedAt DateTime @updatedAt
+}
+
+// ───────────────────────── SHIFT ─────────────────────────
+
+model Shift {
+  id           String   @id @default(uuid())
+  businessDate DateTime @db.Date
+  shiftNo      Int // urutan shift pada hari itu
+  label        String // Pagi / Siang / Malam, otomatis dari jam mulai
+  terminal     String   @default("POS-1")
+
+  cashierId String
+  cashier   User        @relation("ShiftCashier", fields: [cashierId], references: [id])
+  status    ShiftStatus @default(OPEN)
+
+  openedAt             DateTime @default(now())
+  openingAmount        Int // wajib > 0
+  openingDenominations Json // { "100000": 2, "50000": 3, ... }
+  openNote             String?
+
+  closedAt            DateTime?
+  countedCash         Int? // hitungan kasir (blind close)
+  countedDenominations Json?
+  closeNote           String?
+  expectedCash        Int? // dihitung sistem saat tutup
+  cashDifference      Int? // countedCash - expectedCash
+
+  reconciledById String?
+  reconciledBy   User?     @relation("ShiftReconciler", fields: [reconciledById], references: [id])
+  reconciledAt   DateTime?
+  reconcileNote  String?
+
+  transactions Transaction[]
+
+  @@unique([businessDate, shiftNo])
+  @@index([cashierId, status])
+}
+
+// ───────────────────────── TRANSAKSI ─────────────────────────
+
+model Transaction {
+  id        String @id @default(uuid())
+  clientRef String @unique // UUID dari frontend, mencegah tiket ganda saat klik ganda/retry
+
+  businessDate DateTime @db.Date
+  ticketSeq    Int
+  ticketNo     String // contoh: A-047, reset tiap hari
+
+  channel   Channel           @default(DINE_IN)
+  tableNo   String?
+  holdLabel String?
+  note      String?
+  status    TransactionStatus @default(HELD)
+
+  cashierId String
+  cashier   User    @relation("TxCashier", fields: [cashierId], references: [id])
+  shiftId   String?
+  shift     Shift?  @relation(fields: [shiftId], references: [id])
+
+  // Urutan hitung: subtotal -> diskon preset -> pajak -> potongan kecil -> pembulatan (Tunai)
+  subtotal       Int
+  takeoutFee     Int @default(0)
+  discountPresetId String?
+  discountPreset DiscountPreset? @relation(fields: [discountPresetId], references: [id])
+  discountAmount Int @default(0)
+  discountApprovedById String?
+  discountApprovedBy   User?   @relation("TxDiscountApprover", fields: [discountApprovedById], references: [id])
+  tax            Int @default(0)
+  smallCut       Int @default(0)
+  rounding       Int @default(0)
+  totalAmount    Int
+
+  paymentMethod PaymentMethod?
+  customerPaid  Int?
+  changeAmount  Int?
+  paidAt        DateTime?
+  receiptStatus ReceiptStatus @default(PRINTED)
+
+  // QRIS Midtrans (dicek lewat polling, backend ada di LAN)
+  midtransOrderId       String?   @unique // tiket + tanggal + nomor percobaan
+  midtransTransactionId String?
+  midtransAttempt       Int       @default(0)
+  qrString              String?
+  expiresAt             DateTime?
+
+  // disiapkan untuk Bagi Tagihan (V2)
+  splitFromId String?
+  splitFrom   Transaction?  @relation("Split", fields: [splitFromId], references: [id])
+  splitChildren Transaction[] @relation("Split")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items          TransactionItem[]
+  voidRequests   VoidRequest[]
+  stockMovements StockMovement[]
+
+  @@unique([businessDate, ticketNo])
+  @@index([status, createdAt])
+  @@index([cashierId, createdAt])
+  @@index([shiftId])
+}
+
+model TransactionItem {
+  id            String      @id @default(uuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  menuId        String
+  menu          Menu        @relation(fields: [menuId], references: [id])
+
+  // snapshot saat transaksi, supaya laporan lama tetap benar kalau harga/HPP berubah
+  nameSnapshot String
+  unitPrice    Int
+  hppSnapshot  Int    @default(0)
+
+  quantity Int
+  subtotal Int
+  notes    String? // gabungan chip catatan cepat + teks bebas
+}
+
+model VoidRequest {
+  id            String      @id @default(uuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  requestedById  String
+  requestedBy    User       @relation("VoidRequester", fields: [requestedById], references: [id])
+  reasonCategory VoidReason
+  note           String // wajib, maks 120 karakter
+  createdAt      DateTime   @default(now())
+
+  decision     VoidDecision @default(PENDING)
+  decidedById  String?
+  decidedBy    User?        @relation("VoidDecider", fields: [decidedById], references: [id])
+  decidedAt    DateTime?
+  decisionNote String?
+
+  @@index([decision, createdAt])
+}
+
+// ───────────────────────── STOK & AUDIT ─────────────────────────
+
+model StockMovement {
+  id            String            @id @default(uuid())
+  menuId        String
+  menu          Menu              @relation(fields: [menuId], references: [id])
+  type          StockMovementType
+  quantity      Int // bertanda: penjualan negatif, restock positif
+  balanceAfter  Int?
+  transactionId String?
+  transaction   Transaction?      @relation(fields: [transactionId], references: [id])
+  userId        String
+  user          User              @relation(fields: [userId], references: [id])
+  note          String?
+  createdAt     DateTime          @default(now())
+
+  @@index([menuId, createdAt])
+}
+
+// Append-only: tidak ada endpoint ubah/hapus.
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  category   String // AUTH, SHIFT, DISCOUNT, VOID, MENU, STOCK, SETTINGS, SECURITY, PRINT
+  action     String
+  entityType String?
+  entityId   String?
+  details    String?
+  metadata   Json?
+  terminal   String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([category, createdAt])
+}
