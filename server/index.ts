@@ -7,6 +7,8 @@ import authRouter from "./routes/auth.ts";
 import categoryRouter from "./routes/categories.ts";
 import menuRouter from "./routes/menus.ts";
 import userRouter from "./routes/users.ts";
+import transactionRouter from "./routes/transactions.ts";
+import dashboardRouter from "./routes/dashboard.ts";
 
 //pesan error zod pakai bahasa indonesia
 z.config(z.locales.id());
@@ -25,6 +27,8 @@ app.use("/api/auth", authRouter);
 app.use("/api/categories", categoryRouter);
 app.use("/api/menus", menuRouter);
 app.use("/api/users", userRouter);
+app.use("/api/transactions", transactionRouter);
+app.use("/api/dashboard", dashboardRouter);
 
 app.use(notFound);
 app.use(errorHandler);
